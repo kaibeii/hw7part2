@@ -28,12 +28,6 @@ class PressurePlate(pygame.sprite.Sprite):
         self.rect = self.image.get_rect(topleft=(x, y))
 
     def update_state(self, pressed: bool) -> None:
-        """
-        Set pressed state and update visual color.
-        Called every frame by Game._check_buttons().
-
-        Args:
-            pressed: True if a player is currently on this plate
-        """
-        self.pressed = pressed
-        self.image.fill(BUTTON_ON if pressed else BUTTON_OFF)
+        if pressed:
+            self.pressed = True
+            self.image.fill(BUTTON_ON if self.pressed else BUTTON_OFF)

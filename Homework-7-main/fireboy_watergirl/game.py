@@ -15,7 +15,10 @@ from fireboy_watergirl.settings import (
     STATE_MENU, STATE_PLAYING, STATE_WIN, STATE_GAME_OVER,
     FIRE, WATER,
 )
-from fireboy_watergirl.levels.level1 import load_level
+from fireboy_watergirl.levels.level1 import load_level as load_level1
+from fireboy_watergirl.levels.level2 import load_level as load_level2
+
+LEVEL_LOADERS = [load_level1, load_level2]
 
 
 class Game:
@@ -40,6 +43,7 @@ class Game:
         self.font_small  = pygame.font.SysFont("Arial", 20)
 
         self.state = STATE_MENU
+        self.current_level: int = 0   # 0-based index into LEVEL_LOADERS
 
         # Level objects — populated by _start_level()
         self.tiles    = None
@@ -48,6 +52,10 @@ class Game:
         self.doors    = None
         self.fireboy  = None
         self.watergirl = None
+
+        # BUG FIX: Track whether ENTER was already held when the overlay
+        # appeared so we don't instantly skip past it.
+        self._enter_was_pressed = False
 
     # =========================================================================
     # Main loop
@@ -67,7 +75,7 @@ class Game:
                 self._draw_playing()
             elif self.state == STATE_WIN:
                 self._update_overlay()
-                self._draw_playing()          # show level in background
+                self._draw_playing()
                 self._draw_win_overlay()
             elif self.state == STATE_GAME_OVER:
                 self._update_overlay()
@@ -81,25 +89,48 @@ class Game:
     # =========================================================================
 
     def _handle_global_events(self) -> None:
-        """Handle QUIT and universal R-to-restart key."""
+        """
+        Handle QUIT and universal R-to-restart key.
+
+        BUG FIX: Menu/overlay transitions now use KEYDOWN events rather than
+        get_pressed(), which polls held state. Using get_pressed() caused the
+        game to fly through the menu and overlay screens without pause because
+        the key was still physically held from the previous state change.
+        """
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
+
             if event.type == pygame.KEYDOWN:
+                # R restarts from any non-menu state
                 if event.key == pygame.K_r and self.state != STATE_MENU:
-                    self._start_level()
+                    self._start_level()   # restart current level
+
+                # ENTER / SPACE: start from menu
+                if self.state == STATE_MENU:
+                    if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self._start_level(0)
+
+                # ENTER / SPACE: return to menu from overlay screens
+                elif self.state in (STATE_WIN, STATE_GAME_OVER):
+                    if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self.state = STATE_MENU
+                    if event.key == pygame.K_n and self.state == STATE_WIN:
+                        self._next_level()
 
     # =========================================================================
     # Level initialisation
     # =========================================================================
 
-    def _start_level(self) -> None:
+    def _start_level(self, level_index: int = None) -> None:
         """
         Load all level sprites fresh and transition to STATE_PLAYING.
-        Called on first start and on restart (R key or menu replay).
+        If level_index is given, jump to that level; otherwise reload current.
         """
-        level = load_level()
+        if level_index is not None:
+            self.current_level = level_index
+        level = LEVEL_LOADERS[self.current_level]()
         self.tiles     = level["tiles"]
         self.hazards   = level["hazards"]
         self.buttons   = level["buttons"]
@@ -108,19 +139,27 @@ class Game:
         self.watergirl = level["watergirl"]
         self.state = STATE_PLAYING
 
+    def _next_level(self) -> None:
+        """Advance to the next level, or return to menu if no more levels."""
+        next_index = self.current_level + 1
+        if next_index < len(LEVEL_LOADERS):
+            self._start_level(next_index)
+        else:
+            self.state = STATE_MENU
+
     # =========================================================================
     # MENU state
     # =========================================================================
 
     def _update_menu(self) -> None:
-        """Start game on ENTER or SPACE."""
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_RETURN] or keys[pygame.K_SPACE]:
-            self._start_level()
+        """
+        Menu input is now handled entirely in _handle_global_events() via
+        KEYDOWN events.  This method is kept for future menu animation logic.
+        """
+        pass
 
     def _draw_menu(self) -> None:
         """Render the title screen."""
-        # Background gradient: split red (left) / blue (right)
         left_surf  = pygame.Surface((SCREEN_W // 2, SCREEN_H))
         right_surf = pygame.Surface((SCREEN_W // 2, SCREEN_H))
         left_surf.fill((80, 25, 10))
@@ -128,16 +167,13 @@ class Game:
         self.screen.blit(left_surf, (0, 0))
         self.screen.blit(right_surf, (SCREEN_W // 2, 0))
 
-        # Title
         title_surf = self.font_large.render("Fireboy & Watergirl", True, WHITE)
         tx = SCREEN_W // 2 - title_surf.get_width() // 2
         self.screen.blit(title_surf, (tx, 120))
 
-        # Subtitle
         sub = self.font_small.render("A co-op puzzle platformer", True, (200, 200, 200))
         self.screen.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, 186))
 
-        # Controls block
         controls = [
             ("Fireboy",   "Arrow Keys  ←  →  ↑ jump", FIRE_COLOR),
             ("Watergirl", "A / D  move    W  jump",    WATER_COLOR),
@@ -151,18 +187,15 @@ class Game:
             self.screen.blit(keys_surf, (cx - keys_surf.get_width() // 2, y_start + 38))
             y_start += 90
 
-        # Goal text
         goal = self.font_small.render(
             "Both players must reach their EXIT DOORS at the same time!", True, (220, 220, 100)
         )
         self.screen.blit(goal, (SCREEN_W // 2 - goal.get_width() // 2, 450))
 
-        # Start prompt (blink using tick count)
         if (pygame.time.get_ticks() // 500) % 2 == 0:
             start_surf = self.font_medium.render("Press  ENTER  to Start", True, WHITE)
             self.screen.blit(start_surf, (SCREEN_W // 2 - start_surf.get_width() // 2, 520))
 
-        # Restart hint (not shown on menu, but show R key hint)
         r_hint = self.font_small.render("R = Restart  during play", True, (150, 150, 150))
         self.screen.blit(r_hint, (SCREEN_W // 2 - r_hint.get_width() // 2, 570))
 
@@ -184,9 +217,9 @@ class Game:
         keys = pygame.key.get_pressed()
 
         for player in (self.fireboy, self.watergirl):
-            player.at_door = False           # reset each frame
+            player.at_door = False
             player.handle_input(keys)
-            player.update()                  # apply gravity
+            player.update()
             player.resolve_x(self.tiles)
             player.resolve_y(self.tiles)
 
@@ -210,15 +243,21 @@ class Game:
         Determine which buttons are pressed this frame, then update door states.
         A button is only considered pressed when the player is on the ground and
         overlapping the plate — prevents false triggers while jumping overhead.
+
+        BUG FIX: Dead players no longer activate buttons. Previously a dead
+        player's frozen rect could keep a button held indefinitely, leaving a
+        door open and potentially confusing the win condition display.
         """
         pressed_ids: set = set()
 
         for button in self.buttons:
             fb_on = (
+                self.fireboy.alive and
                 self.fireboy.on_ground and
                 self.fireboy.rect.colliderect(button.rect)
             )
             wg_on = (
+                self.watergirl.alive and
                 self.watergirl.on_ground and
                 self.watergirl.rect.colliderect(button.rect)
             )
@@ -226,32 +265,40 @@ class Game:
             if button.pressed:
                 pressed_ids.add(button.button_id)
 
-        # Open/close doors based on pressed buttons
         for door in self.doors:
             if door.required_button_id is None:
                 door.set_open(True)
             else:
-                door.set_open(door.required_button_id in pressed_ids)
+                btn1_ok = door.required_button_id in pressed_ids
+                btn2_ok = (door.required_button_id_2 is None or
+                           door.required_button_id_2 in pressed_ids)
+                door.set_open(btn1_ok and btn2_ok)
 
     def _check_doors(self) -> None:
         """
         Set player.at_door = True when the player overlaps their OPEN exit door.
-        Only the matching element door counts (Fireboy → fire door, Watergirl → water door).
+        Only the matching element door counts.
+
+        BUG FIX: Dead players can no longer trigger a door, which previously
+        could cause a spurious WIN if they happened to die on the door tile.
         """
         for door in self.doors:
             if not door.open:
                 continue
-            if door.element == FIRE and self.fireboy.rect.colliderect(door.rect):
+            if (door.element == FIRE
+                    and self.fireboy.alive
+                    and self.fireboy.rect.colliderect(door.rect)):
                 self.fireboy.at_door = True
-            if door.element == WATER and self.watergirl.rect.colliderect(door.rect):
+            if (door.element == WATER
+                    and self.watergirl.alive
+                    and self.watergirl.rect.colliderect(door.rect)):
                 self.watergirl.at_door = True
 
     def _check_win_or_death(self) -> None:
         """
         Win:        both players are at their open door on the same frame.
         Game over:  either player is dead.
-        Win takes priority (both could technically collide and win at the exact
-        frame a hazard kills them — unlikely but win is the better outcome).
+        Win takes priority.
         """
         if self.fireboy.at_door and self.watergirl.at_door:
             self.state = STATE_WIN
@@ -265,7 +312,7 @@ class Game:
 
     def _draw_playing(self) -> None:
         """
-        Render the level.  Painter's order (back to front):
+        Render the level. Painter's order (back to front):
           1. Background
           2. Tiles
           3. Hazards
@@ -281,7 +328,6 @@ class Game:
         self.buttons.draw(self.screen)
         self.doors.draw(self.screen)
 
-        # Players rendered individually (not in a group) so we can always draw both
         self.screen.blit(self.fireboy.image,   self.fireboy.rect)
         self.screen.blit(self.watergirl.image, self.watergirl.rect)
 
@@ -289,15 +335,12 @@ class Game:
 
     def _draw_hud(self) -> None:
         """Render control labels and restart hint at the top of the screen."""
-        # Fireboy label (left)
         fb_label = self.font_small.render("Fireboy: ← → ↑", True, FIRE_COLOR)
         self.screen.blit(fb_label, (25, 25))
 
-        # Watergirl label (right)
         wg_label = self.font_small.render("Watergirl: A D W", True, WATER_COLOR)
         self.screen.blit(wg_label, (SCREEN_W - wg_label.get_width() - 25, 25))
 
-        # Door status hints (center)
         fb_door = self._get_door(FIRE)
         wg_door = self._get_door(WATER)
 
@@ -313,8 +356,9 @@ class Game:
             self.screen.blit(surf, (SCREEN_W // 2 - surf.get_width() // 2, y_hint))
             y_hint += 22
 
-        # Restart hint
-        r_surf = self.font_small.render("R = Restart", True, (120, 120, 120))
+        r_surf = self.font_small.render(
+            f"Level {self.current_level + 1}    R = Restart", True, (120, 120, 120)
+        )
         self.screen.blit(r_surf, (SCREEN_W // 2 - r_surf.get_width() // 2, SCREEN_H - 24))
 
     def _get_door(self, element: str):
@@ -330,25 +374,30 @@ class Game:
 
     def _update_overlay(self) -> None:
         """
-        On WIN or GAME_OVER screens:
-          ENTER / SPACE → return to menu
-          R             → restart immediately (handled by _handle_global_events)
+        Overlay transitions (WIN / GAME_OVER → MENU) are now handled via
+        KEYDOWN events in _handle_global_events().  This method is kept for
+        future overlay animation or timer logic.
         """
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_RETURN] or keys[pygame.K_SPACE]:
-            self.state = STATE_MENU
+        pass
 
     def _draw_win_overlay(self) -> None:
         """Semi-transparent green overlay with WIN message."""
         self._draw_dimmed_overlay((20, 100, 20), 160)
 
         title = self.font_large.render("YOU WIN!", True, (100, 255, 100))
-        self.screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, 200))
+        self.screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, 180))
 
         sub = self.font_medium.render("Both players escaped!", True, WHITE)
-        self.screen.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, 280))
+        self.screen.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, 260))
 
-        self._draw_replay_prompt()
+        has_next = self.current_level + 1 < len(LEVEL_LOADERS)
+        if has_next:
+            next_surf = self.font_medium.render(
+                f"N = Level {self.current_level + 2}", True, (200, 255, 200)
+            )
+            self.screen.blit(next_surf, (SCREEN_W // 2 - next_surf.get_width() // 2, 330))
+
+        self._draw_replay_prompt(show_next=has_next)
 
     def _draw_game_over_overlay(self) -> None:
         """Semi-transparent red overlay with GAME OVER message."""
@@ -357,7 +406,6 @@ class Game:
         title = self.font_large.render("GAME OVER", True, (255, 80, 80))
         self.screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, 200))
 
-        # Show which player died
         if not self.fireboy.alive and not self.watergirl.alive:
             msg = "Both players perished!"
         elif not self.fireboy.alive:
@@ -368,7 +416,7 @@ class Game:
         sub = self.font_medium.render(msg, True, WHITE)
         self.screen.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, 280))
 
-        self._draw_replay_prompt()
+        self._draw_replay_prompt(show_next=False)
 
     def _draw_dimmed_overlay(self, color: tuple, alpha: int) -> None:
         """Draw a full-screen semi-transparent rectangle over the level."""
@@ -376,8 +424,11 @@ class Game:
         overlay.fill((*color, alpha))
         self.screen.blit(overlay, (0, 0))
 
-    def _draw_replay_prompt(self) -> None:
+    def _draw_replay_prompt(self, show_next: bool = False) -> None:
         """Blinking replay / menu prompt shown on WIN and GAME_OVER screens."""
         if (pygame.time.get_ticks() // 600) % 2 == 0:
-            prompt = self.font_medium.render("ENTER = Menu    R = Restart", True, WHITE)
-            self.screen.blit(prompt, (SCREEN_W // 2 - prompt.get_width() // 2, 370))
+            text = "ENTER = Menu    R = Restart"
+            if show_next:
+                text += "    N = Next Level"
+            prompt = self.font_medium.render(text, True, WHITE)
+            self.screen.blit(prompt, (SCREEN_W // 2 - prompt.get_width() // 2, 400))
